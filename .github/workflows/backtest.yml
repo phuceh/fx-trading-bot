@@ -1,0 +1,52 @@
+name: Backtest CI
+
+# Runs on every push/PR to catch code-breaking changes, plus a weekly
+# scheduled run. Uses synthetic data as a smoke test (confirms the pipeline
+# runs end-to-end) - it does NOT evaluate strategy performance, since real
+# historical CSVs aren't committed to the repo (see .gitignore / README).
+#
+# To also CI-test against real data: add your CSVs under data/ in a private
+# repo (or use GitHub encrypted artifacts/secrets to fetch them from
+# elsewhere in this workflow), then add a step below calling run_backtest.py
+# with --csv-exec/--csv-1h/--csv-daily instead of --synthetic.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        strategy_name: [engulfing, checklist]
+        pair: [EURUSD, GBPUSD, USDCAD]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest smoke test (synthetic data)
+        run: |
+          python run_backtest.py \
+            --strategy ${{ matrix.strategy_name }} \
+            --pair ${{ matrix.pair }} \
+            --synthetic
+
+      - name: Upload trade log (if any trades were generated)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trades-${{ matrix.strategy_name }}-${{ matrix.pair }}
+          path: output/*.csv
+          if-no-files-found: ignore

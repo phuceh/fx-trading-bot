@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Real historical price data and trade logs - don't commit broker/data-vendor
+# exports (licensing) or account-specific output by default.
+data/*.csv
+output/*.csv
+
+# Keep folder structure even though contents are ignored
+!data/.gitkeep
+!output/.gitkeep
+
+# Local secrets (MT5 login, account numbers, API keys) - see .env.example
+.env
