@@ -14,3 +14,8 @@ output/*.csv
 
 # Local secrets (MT5 login, account numbers, API keys) - see .env.example
 .env
+
+# Live runner: config has your login, state/logs are local runtime data
+live/config.ini
+live/live_state.json
+live/logs/
