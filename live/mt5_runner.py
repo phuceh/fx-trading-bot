@@ -59,12 +59,72 @@ def load_config():
     return cfg
 
 
+MAGIC_NUMBER = 20260724
+
+
+def log_trade_open(state, ticket, symbol, direction, lots, entry_price, stop_loss, take_profit, bar_time):
+    state.setdefault("open_positions", {})
+    state["open_positions"][str(ticket)] = {
+        "symbol": symbol, "direction": direction, "lots": lots,
+        "entry_price": entry_price, "stop_loss": stop_loss, "take_profit": take_profit,
+        "bar_time": bar_time, "open_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def check_closed_positions(mt5, state):
+    """Called once per poll cycle. Compares the positions we're tracking
+    (opened by this bot, keyed by ticket) against what MT5 currently
+    reports open. Anything we were tracking that's no longer open has
+    closed - pull the actual closing deal from MT5's history for the real
+    profit/loss (not an estimate) and log it to trades.csv."""
+    open_positions = state.get("open_positions", {})
+    if not open_positions:
+        return
+
+    still_open_tickets = {str(p.ticket) for p in (mt5.positions_get(magic=MAGIC_NUMBER) or [])}
+
+    for ticket_str, info in list(open_positions.items()):
+        if ticket_str in still_open_tickets:
+            continue  # still open, nothing to do
+
+        ticket = int(ticket_str)
+        deals = mt5.history_deals_get(position=ticket)
+        profit = commission = swap = 0.0
+        exit_price = None
+        exit_time = None
+        if deals:
+            for d in deals:
+                if d.entry == 1:  # DEAL_ENTRY_OUT - a closing deal
+                    profit += d.profit
+                    commission += d.commission
+                    swap += d.swap
+                    exit_price = d.price
+                    exit_time = pd.to_datetime(d.time, unit="s").isoformat()
+
+        net_pnl = profit + commission + swap
+        row = {
+            "symbol": info["symbol"], "direction": info["direction"], "lots": info["lots"],
+            "bar_time": info["bar_time"], "open_time": info["open_time"],
+            "entry_price": info["entry_price"], "stop_loss": info["stop_loss"],
+            "take_profit": info["take_profit"], "exit_price": exit_price, "exit_time": exit_time,
+            "raw_profit_before_fees": profit, "commission": commission, "swap": swap,
+            "profit_after_fees": net_pnl,
+        }
+        log.info(f"TRADE CLOSED: {info['symbol']} {info['direction']} {info['lots']} lots -- "
+                 f"net P&L: {net_pnl:.2f}")
+        append_csv_row(TRADE_LOG_PATH, row)
+        del open_positions[ticket_str]
+
+    state["open_positions"] = open_positions
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
             return json.load(f)
     return {"last_bar_time": {}, "daily_start_balance": None, "daily_date": None,
-             "peak_balance": None, "trading_halted": False, "halt_reason": None}
+             "peak_balance": None, "trading_halted": False, "halt_reason": None,
+             "open_positions": {}}
 
 
 def save_state(state):
@@ -222,7 +282,7 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                             "sl": params["stop_loss"],
                             "tp": params["take_profit"],
                             "deviation": 20,
-                            "magic": 20260724,
+                            "magic": MAGIC_NUMBER,
                             "comment": "fade_streak_rsi_bot",
                             "type_time": mt5.ORDER_TIME_GTC,
                             "type_filling": mt5.ORDER_FILLING_IOC,
@@ -230,6 +290,20 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                         result = mt5.order_send(request)
                         decision_row["mt5_result"] = str(result.retcode) if result else "FAILED"
                         log.info(f"Order sent for {symbol}: retcode={decision_row.get('mt5_result')}")
+
+                        if result and result.retcode == 10009:  # TRADE_RETCODE_DONE
+                            # find the newly opened position to start tracking it for close-detection
+                            new_positions = mt5.positions_get(symbol=symbol, magic=MAGIC_NUMBER) or []
+                            matched = [p for p in new_positions if str(p.ticket) not in state.get("open_positions", {})]
+                            if matched:
+                                pos = matched[0]
+                                log_trade_open(state, pos.ticket, symbol, direction, lots,
+                                                price, params["stop_loss"], params["take_profit"],
+                                                str(last_closed_bar_time))
+                            else:
+                                log.warning(f"Order for {symbol} confirmed but couldn't locate the "
+                                            f"new position to track it - close P&L won't be logged "
+                                            f"for this trade. Check MT5 History manually.")
     else:
         decision_row["action"] = "no signal"
 
@@ -270,7 +344,14 @@ def main():
                     process_symbol(mt5, symbol, cfg, state, dry_run)
                 except Exception as e:
                     log.error(f"Error processing {symbol}: {e}")
-                save_state(state)
+
+            if not dry_run:
+                try:
+                    check_closed_positions(mt5, state)
+                except Exception as e:
+                    log.error(f"Error checking closed positions: {e}")
+
+            save_state(state)
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
         log.info("Stopped by user.")
