@@ -47,6 +47,29 @@ TRADE_LOG_PATH = os.path.join(LOG_DIR, "trades.csv")
 DECISION_LOG_PATH = os.path.join(LOG_DIR, "decisions.csv")
 
 
+def send_order_with_fallback_filling(mt5, base_request: dict):
+    """Different brokers/symbols support different order-filling modes, and
+    there's no reliable way to know which without asking - so try the
+    common ones in order and use whichever the broker actually accepts.
+    Logs which one worked so you know for next time."""
+    fill_modes = [
+        ("IOC", mt5.ORDER_FILLING_IOC),
+        ("FOK", mt5.ORDER_FILLING_FOK),
+        ("RETURN", mt5.ORDER_FILLING_RETURN),
+    ]
+    last_result = None
+    for name, mode in fill_modes:
+        request = {**base_request, "type_filling": mode}
+        result = mt5.order_send(request)
+        if result and result.retcode == 10009:
+            log.info(f"Order filled using '{name}' filling mode.")
+            return result
+        last_result = result
+        if result and result.retcode != 10030:  # 10030 = INVALID_FILL specifically
+            break  # a different error - retrying with another fill mode won't help
+    return last_result
+
+
 def load_config():
     cfg_path = os.path.join(os.path.dirname(__file__), "config.ini")
     if not os.path.exists(cfg_path):
@@ -273,7 +296,7 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                         order_type = mt5.ORDER_TYPE_BUY if direction == "long" else mt5.ORDER_TYPE_SELL
                         tick = mt5.symbol_info_tick(symbol)
                         price = tick.ask if direction == "long" else tick.bid
-                        request = {
+                        base_request = {
                             "action": mt5.TRADE_ACTION_DEAL,
                             "symbol": symbol,
                             "volume": lots,
@@ -285,9 +308,8 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                             "magic": MAGIC_NUMBER,
                             "comment": "fade_streak_rsi_bot",
                             "type_time": mt5.ORDER_TIME_GTC,
-                            "type_filling": mt5.ORDER_FILLING_IOC,
                         }
-                        result = mt5.order_send(request)
+                        result = send_order_with_fallback_filling(mt5, base_request)
                         decision_row["mt5_result"] = str(result.retcode) if result else "FAILED"
                         log.info(f"Order sent for {symbol}: retcode={decision_row.get('mt5_result')}")
 
@@ -301,6 +323,9 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                             10004: "Requote - price moved before the order could fill",
                             10006: "Order rejected by the broker/server",
                             10013: "Invalid request - check symbol/volume/price are all valid",
+                            10030: "None of the order-filling modes tried (IOC/FOK/RETURN) were "
+                                   "accepted by this broker for this symbol - unusual, worth "
+                                   "checking the symbol's trading specification in MT5",
                         }
                         if result and result.retcode != 10009:
                             meaning = RETCODE_MEANINGS.get(result.retcode, "Unknown error - check MT5's Journal tab for details")
