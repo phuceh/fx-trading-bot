@@ -291,6 +291,21 @@ def process_symbol(mt5, symbol: str, cfg, state, dry_run: bool):
                         decision_row["mt5_result"] = str(result.retcode) if result else "FAILED"
                         log.info(f"Order sent for {symbol}: retcode={decision_row.get('mt5_result')}")
 
+                        RETCODE_MEANINGS = {
+                            10009: "Done - order placed successfully",
+                            10027: "AutoTrading is DISABLED in the MT5 terminal - click the "
+                                   "'Algo Trading' button in the MT5 toolbar to enable it, then "
+                                   "no action needed here, it'll pick up the next signal",
+                            10018: "Market is closed for this symbol right now",
+                            10019: "Not enough money in the account for this trade size",
+                            10004: "Requote - price moved before the order could fill",
+                            10006: "Order rejected by the broker/server",
+                            10013: "Invalid request - check symbol/volume/price are all valid",
+                        }
+                        if result and result.retcode != 10009:
+                            meaning = RETCODE_MEANINGS.get(result.retcode, "Unknown error - check MT5's Journal tab for details")
+                            log.error(f"ORDER FAILED for {symbol}: retcode {result.retcode} - {meaning}")
+
                         if result and result.retcode == 10009:  # TRADE_RETCODE_DONE
                             # find the newly opened position to start tracking it for close-detection
                             new_positions = mt5.positions_get(symbol=symbol, magic=MAGIC_NUMBER) or []
