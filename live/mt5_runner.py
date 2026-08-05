@@ -124,6 +124,17 @@ def check_closed_positions(mt5, state):
                     exit_price = d.price
                     exit_time = pd.to_datetime(d.time, unit="s").isoformat()
 
+        if exit_price is None:
+            # Not in the open-positions list, but no closing deal found
+            # either - most likely a transient hiccup in the positions_get
+            # query (e.g. a momentary connection blip), not a real close.
+            # Keep tracking it and check again next poll, rather than
+            # logging a blank/zero row and losing the real result.
+            log.warning(f"{info['symbol']} ticket {ticket} isn't in MT5's open positions, but no "
+                        f"closing deal was found in history either - will re-check next poll "
+                        f"rather than assume it closed.")
+            continue
+
         net_pnl = profit + commission + swap
         row = {
             "symbol": info["symbol"], "direction": info["direction"], "lots": info["lots"],

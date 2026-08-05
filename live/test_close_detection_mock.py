@@ -91,5 +91,35 @@ def run_test():
           "and left the still-open position untouched.")
 
 
+def run_transient_hiccup_test():
+    """The bug that actually happened: position 333 isn't in MT5's open
+    list (maybe a transient query hiccup), but there's also no closing
+    deal for it yet. Should NOT log a blank row and abandon it - should
+    keep tracking it for the next poll."""
+    state = {
+        "open_positions": {
+            "333": {"symbol": "GBPUSD", "direction": "long", "lots": 0.5,
+                     "entry_price": 1.3400, "stop_loss": 1.3350, "take_profit": 1.3460,
+                     "bar_time": "2026-08-03 16:00:00", "open_time": "2026-08-03T16:00:14"},
+        }
+    }
+
+    fake_mt5 = FakeMT5ForClose(open_tickets=[], deals_by_position={})  # nothing open, no deals found either
+
+    trade_log = runner_module.TRADE_LOG_PATH
+    if os.path.exists(trade_log):
+        os.remove(trade_log)
+
+    runner_module.check_closed_positions(fake_mt5, state)
+
+    assert "333" in state["open_positions"], "should still be tracked - not confirmed closed yet"
+    assert not os.path.exists(trade_log) or len(pd.read_csv(trade_log)) == 0, \
+        "should NOT have logged a blank row"
+
+    print("PASS: transient hiccup (missing from open list, no closing deal found) "
+          "correctly kept tracking the position instead of logging a blank row.")
+
+
 if __name__ == "__main__":
     run_test()
+    run_transient_hiccup_test()
