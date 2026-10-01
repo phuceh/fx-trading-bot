@@ -127,6 +127,7 @@ def check_closed_positions(mt5, state, risk_mgr: RiskManager):
             "take_profit": info["take_profit"], "exit_price": exit_price, "exit_time": exit_time,
             "raw_profit_before_fees": profit, "commission": commission, "swap": swap,
             "profit_after_fees": net_pnl,
+            "won_lost": 1 if net_pnl > 0 else 0,
         }
         log.info(f"TRADE CLOSED: {info['symbol']} {info['direction']} {info['lots']} lots -- "
                  f"net P&L: {net_pnl:.2f}")
